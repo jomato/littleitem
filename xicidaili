@@ -1,0 +1,157 @@
+# -*-  coding:utf-8 -*-
+import urllib2
+from bs4 import BeautifulSoup
+import re
+import threading
+import time
+import cookielib
+import pymssql
+import requests
+import tqdm
+
+
+ip_list = []
+port_list =[]
+time_list =[]
+list_1 = []
+list_2 = []
+list_3 = []
+
+
+def fetch_cont(page):#抓取每一页的ip
+
+    try:
+        url = 'http://www.xicidaili.com/nn/' + str(page)
+        cj = cookielib.CookieJar()
+        opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
+        #opener.addheaders = [('User-Agent', 'Mozilla/5.0 (X11; Linux x86_64; rv:38.0) Gecko/20100101 Firefox/38.0 Iceweasel/38.3.0')]
+        ##########添加代理ip############
+        #opener.add_handler(urllib2.ProxyHandler({'http': 'http://122.96.59.106:80'}))
+        urllib2.install_opener(opener)
+        headers = {'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.81 Safari/537.36',
+                   'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                   'Connection':'keep-alive',
+                   'Host':'www.xicidaili.com',
+                   'Content-Type':'text/html; charset=utf-8'}
+        request = urllib2.Request(url, headers=headers)
+        content = urllib2.urlopen(request).read()
+        soup = BeautifulSoup(content, 'html.parser', from_encoding='utf8')
+        cont = soup.find_all('table', attrs={'id': 'ip_list'})[0]
+        tr = cont.find_all('tr')
+        for t in xrange(1, 101):
+            td_list = tr[t].find_all('td', string=re.compile(r'^\d(.)*\d$'))
+            ip = td_list[0].get_text()
+            port = td_list[1].get_text()
+            datetime = td_list[2].get_text()
+            list_1.append(ip)
+            list_2.append(port)
+            list_3.append(datetime)
+            ################print ip, '\t', port,'\t', datetime
+            ################print td[0].get_text(), '\t', td[1].get_text(), '\t', td[2].get_text()
+        # print len(list_1)
+        # print '+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'
+    except:
+        pass
+
+    return list_1, list_2, list_3
+
+
+def test_ip(p):#对抓取的ip进行过滤，提取有用的ip
+
+    ip = list_1[p]
+    port = list_2[p]
+    datetime = list_3[p]
+    pro = 'http://'+str(ip)+':' + str(port)
+    ip_proxy = {'http': pro}
+    try:
+        res = requests.get('http://www.baidu.com/', proxies=ip_proxy, timeout=2)
+
+        if res.status_code == 200:
+            ip_list.append(ip)
+            port_list.append(port)
+            time_list.append(datetime)
+            print ip_proxy['http']
+            # print '+++++++++++++++++++++'
+        else:
+            print ip_proxy, 'err:', res.status_code
+
+    except:
+        pass
+    print len(ip_list)
+    return ip_list, port_list, time_list
+
+
+class Mythread (threading.Thread):#从Thread派生出一个子类用于开启多线程
+    def __init__(self, func, page):
+        threading.Thread.__init__(self)
+        self.page = page
+        self.func = func
+
+    def run(self):
+        apply(self.func, self.page)
+
+
+#存入数据库
+def save(cur,conn):
+
+    for i in tqdm.tqdm(xrange(len(ip_list))):
+        try:
+            sql = r'''INSERT INTO ip_pool VALUES ('%s', '%s','20%s')''' % (ip_list[i], port_list[i], time_list[i] )
+            cur.execute(sql)
+        except:
+            print 'error:', ip_list[i], port_list[i], time_list[i]
+
+    print '存储完成'
+    cur.close()
+    conn.commit()
+    conn.close()
+
+
+def main(num_1, num_2):
+    for i in tqdm.tqdm(range(eval(num_1), eval(num_2))):#抓取网页内容
+        t = Mythread(fetch_cont, (i,))
+        t.start()
+        time.sleep(5)
+    loops = []
+    ############测试ip的有效性
+    for p in xrange(len(list_1)):
+        l = Mythread(test_ip, (p,))
+        loops.append(l)
+    for i in xrange(len(loops)):
+        loops[i].start()
+    for i in tqdm.tqdm(xrange(len(loops))):
+        loops[i].join()
+
+
+if __name__ == '__main__':
+    page_1 = raw_input('请输入您想要抓取的起始页面:\n')
+    page_1 = page_1.strip()
+    while not page_1.isdigit():
+        page_1 = raw_input('请输入数字:\n')
+    while True:
+        page_2 = raw_input('请输入您想要抓取的终止页面:\n')
+        page_2 = page_2.strip()
+        if not page_2.isdigit():
+            print '请您输入数字'
+            continue
+        if eval(page_2) < eval(page_1):
+            print '终止页码要大于起始页码'
+            continue
+        else:
+            main(page_1, page_2)
+            break
+
+    while True:
+        try:
+            pwd = raw_input('请输入数据库密码:\n')
+            db = raw_input('请输入您想要存储的数据库：\n')
+            conn = pymssql.connect(host="localhost", user="sa", password=pwd, database=db)
+            cur = conn.cursor()
+            if cur:
+                break
+
+        except:
+            print '您输入的密码有误或数据库不存在，请重新输入\n ==========================='
+
+
+    save(cur, conn)
